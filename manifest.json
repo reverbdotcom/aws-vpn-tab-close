@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "AWS VPN Tab Closer",
+  "name": "[Reverb] AWS VPN Tab Closer",
   "version": "0.2.1",
   "description": "An extension to detect and close the authentication tab left open by AWS VPN",
   "background": {

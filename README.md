@@ -1,9 +1,14 @@
+## ⚠️ Downstream Fork of: [dougle/aws-vpn-tab-close](https://github.com/dougle/aws-vpn-tab-close)
+Cloned for Reverb source control.
+
 # AWS VPN Tab Close Chrome Extension
 An extension to detect and close the authentication tab left open by AWS VPN.
 
 ### Install
 
-You can find this extension in the [Chrome Web Store](https://chromewebstore.google.com/detail/eeohkjpjmohadfbgaghdofdphnjhidfg?hl=en-GB). Click install and you're done, no config required.
+~~You can find this extension in the Chrome Web Store. Click install and you're done, no config required.~~
+
+This extension is available within the Reverb Self Service catalog. 
 
 ### Permissions
 This extension requires only `host permission` so that it can detect a tab navigating to `http://127.0.0.1:35001/` this is the AWS VPN Client showing you a success message.

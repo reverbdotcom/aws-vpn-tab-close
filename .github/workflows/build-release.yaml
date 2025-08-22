@@ -1,0 +1,153 @@
+name: Build CRX, Release, and Static update.xml
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "manifest.json"
+      - "scripts/**"
+      - "icons/**"
+      - ".github/workflows/build-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed for tag/release API via GITHUB_TOKEN
+
+jobs:
+  build-release-update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false  # we'll push via SSH, not GITHUB_TOKEN
+
+      - name: Setup Chrome
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq rsync
+
+      - name: Read manifest
+        id: manifest
+        run: |
+          NAME=$(jq -r '.name' manifest.json | sed 's/[[:space:]]\+/-/g;s/[^A-Za-z0-9._-]//g')
+          VERSION=$(jq -r '.version' manifest.json)
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Restore CRX signing key (PEM)
+        env:
+          EXTENSION_PRIVATE_KEY_B64: ${{ secrets.EXTENSION_PRIVATE_KEY_B64 }}
+        run: |
+          test -n "$EXTENSION_PRIVATE_KEY_B64" || { echo "Missing EXTENSION_PRIVATE_KEY_B64"; exit 1; }
+          echo "$EXTENSION_PRIVATE_KEY_B64" | base64 -d > key.pem
+          openssl rsa -in key.pem -check -noout
+
+      - name: Stage extension payload
+        run: |
+          rm -rf build dist
+          mkdir -p build dist
+          rsync -a --delete \
+            --include="/manifest.json" \
+            --include="/scripts/***" \
+            --include="/icons/***" \
+            --exclude="*" \
+            ./ build/
+
+      - name: Pack to .crx (CRX3)
+        env:
+          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: |
+          "$CHROME_PATH" \
+            --no-sandbox \
+            --no-first-run \
+            --no-default-browser-check \
+            --pack-extension="$PWD/build" --pack-extension-key="$PWD/key.pem"
+          CRX_SRC=$(ls -1 ../build.crx 2>/dev/null || ls -1 build.crx 2>/dev/null)
+          test -n "$CRX_SRC" || { echo "CRX not found after packing"; exit 1; }
+          OUT="dist/${{ steps.manifest.outputs.name }}-v${{ steps.manifest.outputs.version }}.crx"
+          mv "$CRX_SRC" "$OUT"
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "ci-deploy"
+          git config user.email "ci-deploy@users.noreply.github.com"
+
+      - name: Start ssh-agent & add deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        run: |
+          test -n "$DEPLOY_KEY" || { echo "Missing DEPLOY_KEY secret"; exit 1; }
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          eval "$(ssh-agent -s)"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          ssh-add ~/.ssh/id_ed25519
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+      - name: Switch origin to SSH
+        run: git remote set-url origin "git@github.com:${{ github.repository }}.git"
+
+      - name: Create/move tag and push via SSH
+        env:
+          TAG: ${{ steps.manifest.outputs.tag }}
+        run: |
+          git tag -f "$TAG"
+          git push -f origin "$TAG"
+
+      - name: Create/Update GitHub Release (attach CRX) via gh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.manifest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.crx --clobber
+          else
+            gh release create "$TAG" dist/*.crx -t "Release $TAG" -n "" --latest
+          fi
+
+      - name: Generate updates/update.xml (static path on main)
+        id: genxml
+        env:
+          EXTENSION_ID: ${{ vars.EXTENSION_ID || secrets.EXTENSION_ID }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.manifest.outputs.tag }}
+          NAME: ${{ steps.manifest.outputs.name }}
+          VERSION: ${{ steps.manifest.outputs.version }}
+        run: |
+          test -n "$EXTENSION_ID" || { echo "EXTENSION_ID is required (var or secret)"; exit 1; }
+          mkdir -p updates
+          CRX_FILE="${NAME}-v${VERSION}.crx"
+          CODEBASE_URL="https://github.com/${REPO}/releases/download/${TAG}/${CRX_FILE}"
+          cat > updates/update.xml <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+          <app appid="${EXTENSION_ID}">
+              <updatecheck codebase="${CODEBASE_URL}" version="${VERSION}" />
+          </app>
+          </gupdate>
+          EOF
+          echo "StaticUpdateURL=https://raw.githubusercontent.com/${REPO}/main/updates/update.xml" >> $GITHUB_OUTPUT
+
+      - name: Commit & push update.xml to main via SSH
+        run: |
+          git add updates/update.xml
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update update.xml for ${{ steps.manifest.outputs.tag }} [skip ci]"
+            git push origin HEAD:main
+          else
+            echo "No changes to update.xml"
+          fi
+
+      - name: Show static update URL
+        run: echo "${{ steps.genxml.outputs.StaticUpdateURL }}"
