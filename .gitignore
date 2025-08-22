@@ -1,2 +1,7 @@
 .idea
 *.zip
+build.*
+*.pem
+
+build/
+dist/
