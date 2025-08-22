@@ -25,7 +25,7 @@ jobs:
 
       - name: Setup Chrome
         id: setup-chrome
-        uses: browser-actions/setup-chrome@v1
+        uses: browser-actions/setup-chrome@v2
 
       - name: Install tools
         run: |
@@ -64,7 +64,11 @@ jobs:
         env:
           CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
         run: |
-          "$CHROME_PATH" --pack-extension="$PWD/build" --pack-extension-key="$PWD/key.pem"
+          "$CHROME_PATH" \
+            --no-sandbox \
+            --no-first-run \
+            --no-default-browser-check \
+            --pack-extension="$PWD/build" --pack-extension-key="$PWD/key.pem"
           CRX_SRC=$(ls -1 ../build.crx 2>/dev/null || ls -1 build.crx 2>/dev/null)
           test -n "$CRX_SRC" || { echo "CRX not found after packing"; exit 1; }
           OUT="dist/${{ steps.manifest.outputs.name }}-v${{ steps.manifest.outputs.version }}.crx"
